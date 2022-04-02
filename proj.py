@@ -24,16 +24,18 @@ class ProcessService(Service):
     # this isn't actually used anywhere other than testing, for print string formatting
     statedict = {"DO-NOT-WANT": "WANTED", "WANTED": "HELD", "HELD": "DO-NOT-WANT"}
 
-    def __init__(self, procid):
-        self.procs = {}
+    def __init__(self, procid, verbose=False):
+        self.verbose = verbose
+        self.procs = {}  # dict of proc_ids : ports (doesn't include self)
         self.state = "DO-NOT-WANT"
         self.procid = procid
-        self.lamp_clock = 0
-        self.clock = perf_counter()  # this one is only for rough times, for timeouts
+        self.lamp_clock = 0 # lamport
+        self.clock = perf_counter()  # only for counting its own timeouts
+        # list of procids: release_cs empties this list and sends deferred acks
         self.deferred_actions = []
 
-        self.do_not_want_timeout = (5, 5)  # default values
-        self.held_timeout = (10, 10)
+        self.do_not_want_timeout = [5, 5]  # default values
+        self.held_timeout = [10, 10]
 
         # for testing purposes
         # self.do_not_want_timeout = (randint(1,10), randint(10,30))  # default values
@@ -42,9 +44,11 @@ class ProcessService(Service):
         self.current_timeout = randint(*self.do_not_want_timeout)
         self.acks = []
 
-        print(f"instantiating process {self.procid}")
+        if self.verbose:
+            print(f"instantiating process {self.procid}")
 
     def request_cs(self):
+        # run when a process decides it wants the CS. immediate acks are recorded
         for procid in self.procs:
             if self.send_request(procid):
                 self.acks[procid] = True
@@ -59,6 +63,8 @@ class ProcessService(Service):
         connect("localhost", self.procs[procid]).root.receive_ack(self.procid)
 
     def statechange(self, newstate):
+        if self.verbose:
+            print(f"proc {self.procid} changing state to {newstate}")
         self.clock = perf_counter()
         self.lamp_clock += 1
         if newstate == "WANTED":
@@ -82,8 +88,8 @@ class ProcessService(Service):
     def tick(self):
         t = perf_counter() - self.clock
         if t > self.current_timeout:
-            print(f"timeout reached in proc {self.procid}:"\
-                  f" state changing to {self.statedict[self.state]}")
+            if self.verbose:
+                print(f"timeout reached in proc {self.procid}")
             if self.state == "DO-NOT-WANT":
                 self.statechange("WANTED")
             elif self.state == "HELD":
@@ -91,7 +97,6 @@ class ProcessService(Service):
 
         if self.state == "WANTED" and all(self.acks.values()):
             self.statechange("HELD")
-            print(f"process {self.procid} taking control of CS")
 
     def send_request(self, procid):
         self.lamp_clock += 1
@@ -124,14 +129,13 @@ if __name__ == "__main__":
     num_procs = int(sys.argv[1])
     procs = dict()  # dict of id: server object
     for i in range(num_procs):  # create the nodes
-        proc = ThreadedServer(ProcessService(i), port=0)
+        proc = ThreadedServer(ProcessService(i, verbose=False), port=0)
         procs[i] = proc  # we assume localhost for everything
 
     proc_port_dict = {key: proc.port for key, proc in procs.items()}
-
-    threads = []
+    threads = []  # so we have threads running threadedservers it's kind of a mess
     for proc in procs.values():
-        t = Thread(target=proc.start)  # using rpyc for this actually makes no sense
+        t = Thread(target=proc.start)  # using rpyc for this actually makes so little sense
         threads.append(t)
         t.start()
 
