@@ -3,6 +3,7 @@ from threading import Thread
 from random import randint
 from time import perf_counter
 from datetime import datetime
+import argparse
 
 from rpyc.utils.server import ThreadedServer
 from rpyc import Service, connect
@@ -151,10 +152,14 @@ class ProcessService(Service):
 
 
 if __name__ == "__main__":
-    num_procs = int(sys.argv[1])
+    parser = argparse.ArgumentParser(description="ricart-agrawala")
+    parser.add_argument("num_procs", type=int)
+    parser.add_argument("--verbose", action="store_true", default=False)
+    args = parser.parse_args()
+
     procs = dict()  # dict of id: server object
-    for i in range(num_procs):  # create the nodes
-        proc = ThreadedServer(ProcessService(i, verbose=True), port=0)
+    for i in range(args.num_procs):  # create the nodes
+        proc = ThreadedServer(ProcessService(i, verbose=args.verbose), port=0)
         procs[i] = proc  # we assume localhost for everything
 
     proc_port_dict = {key: proc.port for key, proc in procs.items()}
