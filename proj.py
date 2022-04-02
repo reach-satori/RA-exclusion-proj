@@ -4,7 +4,6 @@ from random import randint
 from rpyc.utils.server import ThreadedServer
 from rpyc import Service, connect
 from time import perf_counter
-from enum import Enum
 
 class KeyboardThread(Thread):  # threaded input lifted from a stackexchange qst.
 
@@ -20,8 +19,10 @@ class KeyboardThread(Thread):  # threaded input lifted from a stackexchange qst.
 def command_callback(command):
     print(command)
 
-
 class ProcessService(Service):
+
+    # this isn't actually used anywhere other than testing, for print string formatting
+    statedict = {"DO-NOT-WANT": "WANTED", "WANTED": "HELD", "HELD": "DO-NOT-WANT"}
 
     def __init__(self, procid):
         self.procs = {}
@@ -33,10 +34,15 @@ class ProcessService(Service):
 
         self.do_not_want_timeout = (5, 5)  # default values
         self.held_timeout = (10, 10)
+
+        # for testing purposes
+        # self.do_not_want_timeout = (randint(1,10), randint(10,30))  # default values
+        # self.held_timeout = (randint(5,15), randint(15,35))
+
         self.current_timeout = randint(*self.do_not_want_timeout)
         self.acks = []
 
-        print(f"instantiating {self.procid}")
+        print(f"instantiating process {self.procid}")
 
     def request_cs(self):
         for procid in self.procs:
@@ -45,7 +51,12 @@ class ProcessService(Service):
 
     def release_cs(self):
         # run deferred responses
-        pass
+        while self.deferred_actions:
+            next = self.deferred_actions.pop()
+            self.send_ack(next)
+
+    def send_ack(self, procid):
+        connect("localhost", self.procs[procid]).root.receive_ack(self.procid)
 
     def statechange(self, newstate):
         self.clock = perf_counter()
@@ -70,9 +81,9 @@ class ProcessService(Service):
 
     def tick(self):
         t = perf_counter() - self.clock
-        print(self.procid, self.state)
         if t > self.current_timeout:
-            print(t, self.procid, self.state, id(self))
+            print(f"timeout reached in proc {self.procid}:"\
+                  f" state changing to {self.statedict[self.state]}")
             if self.state == "DO-NOT-WANT":
                 self.statechange("WANTED")
             elif self.state == "HELD":
@@ -80,18 +91,22 @@ class ProcessService(Service):
 
         if self.state == "WANTED" and all(self.acks.values()):
             self.statechange("HELD")
+            print(f"process {self.procid} taking control of CS")
 
     def send_request(self, procid):
         self.lamp_clock += 1
         c = connect("localhost", self.procs[procid])
         return c.root.receive_request(self.procid, self.lamp_clock + 1)
 
+    def exposed_receive_ack(self, sending_proc):
+        self.acks[sending_proc] = True
+
     def exposed_receive_request(self, sending_procid, timestamp):
-        if self.state == "DO-NOT-WANT" or (self.state == "WANTED" and timestamp > self.lamp_clock):
+        if self.state == "DO-NOT-WANT" or (self.state == "WANTED" and timestamp < self.lamp_clock):
             out = True
         else:
             out = False
-            pass  # defer response
+            self.deferred_actions.append(sending_procid)
 
         self.lamp_clock = max(self.lamp_clock+1, timestamp)
         return out
@@ -129,10 +144,11 @@ if __name__ == "__main__":
         c.close()
 
     kthread = KeyboardThread(command_callback)
+    tick_interval = 1  # in seconds
 
     while procs:
         for server in procs.values():
             server.service.tick()
 
         for thread in threads:
-            thread.join(timeout=(1/len(procs)))
+            thread.join(timeout=(tick_interval/len(procs)))
